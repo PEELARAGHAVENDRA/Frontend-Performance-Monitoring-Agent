@@ -11,8 +11,11 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, HttpUrl
 from sqlalchemy import create_engine, text
+import google.generativeai as genai
 
 load_dotenv()
+
+genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 if DATABASE_URL and DATABASE_URL.startswith("postgres://"):
@@ -171,94 +174,51 @@ def infer_site_profile(url: str, html: str) -> dict[str, Any]:
 
 def build_business_suggestions(url: str, html: str, summary: dict[str, int]) -> list[dict[str, str]]:
     profile = infer_site_profile(url, html)
-    suggestions: list[dict[str, str]] = []
-
-    if profile["needs_database"]:
-        suggestions.append(
-            suggestion(
-                "Add a real backend/database model",
-                "High",
-                f"PerfMind classified this as {profile['type']} with signals for {profile['database_reason']}.",
-                "Use a database for users, products, orders, sessions, analytics, and admin workflows instead of hardcoded frontend data.",
-            )
-        )
-
-    if profile["type"] == "ecommerce":
-        suggestions.extend(
-            [
+    try:
+        model = genai.GenerativeModel('gemini-1.5-flash')
+        prompt = f"""
+        Analyze this webpage and provide exactly 3 smart, highly contextual performance and business suggestions.
+        URL: {url}
+        Inferred Profile: {profile['type']} (Database needed: {profile['needs_database']})
+        HTML Bytes: {summary.get('html_bytes', 0)}
+        Images: {summary.get('image_count', 0)}
+        Scripts: {summary.get('script_count', 0)}
+        Stylesheets: {summary.get('stylesheet_count', 0)}
+        Render-blocking scripts: {summary.get('blocking_script_count', 0)}
+        External scripts: {summary.get('external_script_count', 0)}
+        
+        Return the result EXACTLY as a JSON array of objects with these exact keys: 
+        "title" (short action), "priority" ("High", "Medium", or "Low"), "evidence" (what you noticed in the stats or profile), "recommendation" (what to do).
+        Do not use markdown formatting like ```json in the output, just return the raw JSON array.
+        """
+        response = model.generate_content(prompt)
+        text_resp = response.text.strip()
+        if text_resp.startswith("```json"):
+            text_resp = text_resp[7:-3].strip()
+        elif text_resp.startswith("```"):
+            text_resp = text_resp[3:-3].strip()
+            
+        ai_suggestions = json.loads(text_resp)
+        suggestions = []
+        for s in ai_suggestions:
+            suggestions.append(
                 suggestion(
-                    "Prioritize product and checkout performance",
-                    "High",
-                    "The page contains commerce signals such as cart, checkout, product, price, or order text.",
-                    "Keep product images optimized, cache product lists, prefetch checkout-critical routes, and monitor conversion-impacting Web Vitals.",
-                ),
-                suggestion(
-                    "Track business-critical frontend errors",
-                    "High",
-                    "E-commerce sites lose revenue when add-to-cart, payment, or checkout scripts fail.",
-                    "Capture JS errors and failed API requests with route, browser, device, and release metadata.",
-                ),
-            ]
-        )
-    elif profile["type"] == "saas":
-        suggestions.append(
-            suggestion(
-                "Separate marketing and app bundles",
-                "Medium",
-                "The site has SaaS signals such as pricing, dashboard, workspace, subscription, or sign-in text.",
-                "Keep the landing page lightweight and lazy-load authenticated dashboard code after login.",
+                    s.get("title", "Optimization suggestion"),
+                    s.get("priority", "Medium"),
+                    s.get("evidence", "Based on AI analysis"),
+                    s.get("recommendation", "Review the site architecture.")
+                )
             )
-        )
-    elif profile["type"] == "education":
-        suggestions.append(
+        return suggestions[:3]
+    except Exception as e:
+        return [
             suggestion(
-                "Persist learning progress and user activity",
-                "High",
-                "Education signals such as course, lesson, student, quiz, or certificate were detected.",
-                "Use a database for users, enrollments, progress, assignments, certificates, and personalized recommendations.",
+                "Monitor performance closely", 
+                "Medium", 
+                f"Site categorized as {profile['type']}", 
+                "Add continuous monitoring to detect regressions early. (AI generation failed)"
             )
-        )
-    elif profile["type"] == "portfolio":
-        suggestions.append(
-            suggestion(
-                "Keep the site static and image-focused",
-                "Medium",
-                "Portfolio signals were detected, so the site may not need a full database.",
-                "Use static generation, optimized project images, contact form protection, and lightweight analytics.",
-            )
-        )
-
-    if summary.get("image_count", 0) > 8:
-        suggestions.append(
-            suggestion(
-                "Build an image optimization pipeline",
-                "Medium",
-                f"The scan found {summary['image_count']} image references.",
-                "Compress images, serve AVIF/WebP, define responsive sizes, and lazy-load non-critical visuals.",
-            )
-        )
-
-    if summary.get("script_count", 0) > 10:
-        suggestions.append(
-            suggestion(
-                "Reduce JavaScript shipped on first load",
-                "Medium",
-                f"The scan found {summary['script_count']} script references.",
-                "Split code by route, defer third-party scripts, and dynamically import heavy interactive widgets.",
-            )
-        )
-
-    if not suggestions:
-        suggestions.append(
-            suggestion(
-                "Add continuous monitoring before scaling",
-                "Medium",
-                "The page does not strongly match a complex dynamic app, but regressions can still happen after changes.",
-                "Add Web Vitals collection, release tracking, and Lighthouse CI so performance changes are caught before users complain.",
-            )
-        )
-
-    return suggestions[:6]
+        ]
 
 
 def metric_from_audit(
