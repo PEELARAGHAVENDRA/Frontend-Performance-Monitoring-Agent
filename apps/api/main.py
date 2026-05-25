@@ -175,7 +175,7 @@ def infer_site_profile(url: str, html: str) -> dict[str, Any]:
 def build_business_suggestions(url: str, html: str, summary: dict[str, int]) -> list[dict[str, str]]:
     profile = infer_site_profile(url, html)
     try:
-        model = genai.GenerativeModel('gemini-1.5-flash')
+        model = genai.GenerativeModel('gemini-2.5-flash')
         prompt = f"""
         Analyze this webpage and provide exactly 3 smart, highly contextual performance and business suggestions.
         URL: {url}
