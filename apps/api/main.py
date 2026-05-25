@@ -120,56 +120,45 @@ def suggestion(title: str, priority: str, evidence: str, recommendation: str) ->
 
 
 def infer_site_profile(url: str, html: str) -> dict[str, Any]:
-    lower = html.lower()
-    signals = {
-        "ecommerce": [
-            "cart",
-            "checkout",
-            "add to cart",
-            "buy now",
-            "product",
-            "price",
-            "₹",
-            "$",
-            "order",
-            "wishlist",
-            "payment",
-        ],
-        "saas": ["pricing", "dashboard", "sign in", "sign up", "workspace", "subscription", "trial", "api key"],
-        "content": ["blog", "article", "author", "category", "newsletter", "read more"],
-        "portfolio": ["portfolio", "projects", "resume", "skills", "contact me", "case study"],
-        "education": ["course", "lesson", "quiz", "student", "learn", "certificate", "assignment"],
-    }
-    counts = {kind: sum(1 for token in tokens if token in lower) for kind, tokens in signals.items()}
-    site_type = max(counts, key=counts.get)
-    confidence = min(0.95, 0.35 + counts[site_type] * 0.1)
-
-    if counts[site_type] == 0:
-        site_type = "general"
-        confidence = 0.35
-
-    needs_database = site_type in {"ecommerce", "saas", "education"} or any(
-        token in lower
-        for token in ["login", "account", "checkout", "cart", "orders", "booking", "admin", "user profile", "payment"]
-    )
-
-    reasons = []
-    if "cart" in lower or "checkout" in lower:
-        reasons.append("cart or checkout flow")
-    if "login" in lower or "sign in" in lower or "account" in lower:
-        reasons.append("user accounts")
-    if "product" in lower or "price" in lower or "₹" in lower or "$" in lower:
-        reasons.append("products or pricing")
-    if "course" in lower or "student" in lower:
-        reasons.append("student/course data")
-
-    return {
-        "type": site_type,
-        "confidence": round(confidence, 2),
-        "needs_database": needs_database,
-        "database_reason": ", ".join(reasons) if reasons else "static content signals only",
-        "signals": counts,
-    }
+    try:
+        model = genai.GenerativeModel('gemini-2.5-flash')
+        prompt = f"""
+        Analyze this webpage HTML (truncated for size) and URL to determine its true business profile.
+        Do not default to ecommerce unless it truly is one. Be highly accurate.
+        URL: {url}
+        HTML Snippet: {html[:2500]}
+        
+        Return the result EXACTLY as a JSON object with these exact keys:
+        "type": string (e.g., "ecommerce", "saas", "portfolio", "blog", "education", "corporate", "landing_page", "news", etc.)
+        "needs_database": boolean (true if the site has users, products, or dynamic content)
+        "database_reason": string (why it needs or doesn't need a database)
+        "confidence": float (between 0.0 and 1.0)
+        
+        Do not use markdown formatting like ```json in the output, just return the raw JSON object.
+        """
+        response = model.generate_content(prompt)
+        text_resp = response.text.strip()
+        if text_resp.startswith("```json"):
+            text_resp = text_resp[7:-3].strip()
+        elif text_resp.startswith("```"):
+            text_resp = text_resp[3:-3].strip()
+            
+        profile = json.loads(text_resp)
+        return {
+            "type": profile.get("type", "general").lower(),
+            "confidence": float(profile.get("confidence", 0.8)),
+            "needs_database": bool(profile.get("needs_database", False)),
+            "database_reason": profile.get("database_reason", "Based on AI analysis"),
+            "signals": {}
+        }
+    except Exception as e:
+        return {
+            "type": "general",
+            "confidence": 0.5,
+            "needs_database": False,
+            "database_reason": "AI inference failed",
+            "signals": {}
+        }
 
 
 def build_business_suggestions(url: str, html: str, summary: dict[str, int]) -> list[dict[str, str]]:
